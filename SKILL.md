@@ -5,29 +5,29 @@ description: "Background conversation risk monitor — activates automatically o
 
 # Hallucination Watch
 
-Low-cost hallucination risk screening. Runs silently in the background, alerts only when needed.
+Low-cost hallucination risk screening.
 
 ## Setup (Auto-Run)
 
-Run these steps at conversation start. No user interaction needed.
+Run at conversation start. No user interaction needed.
 
-### Step 1: Initialize data files
-### Step 2: Load config
-### Step 3: Load session state (session.json, permanent.json)
-### Step 4: Extract topic signature from user message
+1. **Initialize**: run init_skill.py → creates data directory, session.json, permanent.json
+2. **Load config**: read params/default.json
+3. **Load state**: read session.json + permanent.json
+4. **Extract topic**: run topic_embed.py on user message
 
 ## Per-Response Pipeline
 
-1. Count subjective keywords (density-normalized)
-2. Extract chars + fuzzy score (topic-filtered)
-3. Count tokens via tiktoken
-4. Run decision formula (three-zone: Safe/Mark/Verify)
-5. Write session.json
-6. Check & store reference material
-7. Append to permanent.json
-8. Run adaptation (every 10 conversations)
-9. Run correction (Direction B internal / Direction A Web Fetch)
-10. Check for user correction signals
+1. **Count subjective keywords** — density-normalized (count / tokens × 1000)
+2. **Extract chars + fuzzy score** — hash-based, topic-filtered
+3. **Count tokens (full conversation)** — reconstruct ALL messages, count via tiktoken full-conversation mode. Store cumulative_total in session.
+4. **Run decision formula** — density_subj + fuzzy + redundancy + material_inconsistency; three-zone: <100% silent, 100-200% Mark, >=200% Verify
+5. **Write session.json** — include cumulative_total
+6. **Reference material** — store if collecting, always check consistency
+7. **Append permanent.json**
+8. **Adaptation** — run adapt_threshold.py every 10 conversations
+9. **Correction** — Direction B (internal thinking) / Direction A (claim Web Fetch)
+10. **User correction check** — record user_contested, force verify, do NOT use for adaptation
 
 ## Display
 
@@ -35,4 +35,4 @@ Shelter card only on Mark or Verify. Silent otherwise.
 
 ## Known Limitations
 
-9 documented limitations.
+9 documented.
