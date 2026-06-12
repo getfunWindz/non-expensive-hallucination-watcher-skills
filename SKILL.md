@@ -9,25 +9,24 @@ Low-cost hallucination risk screening.
 
 ## Setup (Auto-Run)
 
-Run at conversation start. No user interaction needed.
-
-1. **Initialize**: run init_skill.py
-2. **Load config**: read params/default.json
-3. **Load state**: read session.json + permanent.json
-4. **Extract topic**: run topic_embed.py on user message
+### Step 1: Initialize data files via init_skill.py
+### Step 2: Load config (params/default.json)
+### Step 3: Load session state (session.json + permanent.json)
+### Step 3b: Determine phase + calibrate threshold via calibrate_threshold.py at baseline->active transition
+### Step 4: Extract topic signature via topic_embed.py
 
 ## Per-Response Pipeline
 
-1. **Count subjective keywords** — density-normalized (count / tokens x 1000)
-2. **Extract chars + fuzzy score** — hash-based, topic-filtered
-3. **Count tokens** — recount ALL messages (tiktoken). Track cumulative_total. Redundancy uses conversation turns (every 10 turns = +10).
-4. **Run decision formula** — density_subj + fuzzy + redundancy + material_penalty; three-zone: less than 100% silent, 100-200% Mark, at least 200% Verify
-5. **Write session.json** — include cumulative_total
-6. **Reference material** — store if collecting, check consistency
-7. **Append permanent.json**
-8. **Adaptation** — run adapt_threshold.py every 10 conversations
-9. **Correction** — Direction B (internal) / Direction A (claim Web Fetch)
-10. **User correction check** — record user_contested, force verify, do NOT use for adaptation
+1. Count subjective keywords (density-normalized)
+2. Extract chars via fuzzy_match.py / calc_habit.py; compute fuzzy score
+3. Count tokens: complexity_estimator.py estimates thinking, count_tokens.py sums visible + thinking, redundancy = cumulative / tpi * increment
+4. Decision formula: density_subj + fuzzy + redundancy + material_penalty; three-zone
+5. Write session.json
+6. Reference material: reference_material.py add/check
+7. Append permanent.json
+8. Adaptation: adapt_threshold.py (threshold + redundancy scaling)
+9. Correction: correction.py (Direction B internal + Direction A claim Web Fetch)
+10. User correction check
 
 ## Display
 
@@ -35,4 +34,4 @@ Shelter card only on Mark or Verify. Silent otherwise.
 
 ## Known Limitations
 
-10 documented (incl. redundancy uses turns, not tokens).
+10 documented.
