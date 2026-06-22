@@ -1,66 +1,208 @@
-import json, re, sys
+"""
+complexity_estimator.py — Question complexity → thinking token estimator.
+
+Estimates the amount of thinking tokens a model will generate
+to answer a question, based on the question's topic complexity.
+
+Two modes:
+  estimate:  Given question text + topic_sig → estimated thinking tokens
+  calibrate: Given user_contested topic_sig → adjust complexity score
+
+The complexity map is stored in params.json and persists across sessions.
+"""
+import json
+import re
+import sys
 from pathlib import Path
 from datetime import datetime
 
+
+# Default complexity map: keyword → thinking tokens per occurrence
+# Values based on observed behavior: simple Q&A ~few K, deep reasoning ~1M+
 DEFAULT_COMPLEXITY = [
-    {"keywords": ["\u4f60\u597d", "hello", "hi", "hey", "\u8c22\u8c22", "thanks", "bye", "\u518d\u89c1", "good"], "score": 500, "level": "chat"},
-    {"keywords": ["\u4ec0\u4e48", "\u662f\u8c01", "\u5728\u54ea", "where", "when", "who", "what", "\u591a\u5c11\u94b1", "\u51e0\u70b9"], "score": 5000, "level": "simple_qa"},
-    {"keywords": ["\u662f\u4ec0\u4e48", "\u4ec0\u4e48\u662f", "\u54ea\u4e2a", "how", "which", "tell me", "describe"], "score": 20000, "level": "factual"},
-    {"keywords": ["\u4e3a\u4ec0\u4e48", "\u600e\u4e48", "\u539f\u56e0", "\u89e3\u91ca", "explain", "why", "how does", "how to"], "score": 100000, "level": "explanation"},
-    {"keywords": ["\u5206\u6790", "\u6bd4\u8f83", "\u4f18\u7f3a\u70b9", "pros", "cons", "compare", "contrast", "\u5229\u5f0a", "\u533a\u522b", "\u5dee\u5f02", "different", "similarities"], "score": 300000, "level": "analysis"},
-    {"keywords": ["\u7b97\u6cd5", "\u67b6\u6784", "\u4ee3\u7801", "code", "algorithm", "complexity", "\u51fd\u6570", "\u5b9e\u73b0", "implement", "design", "\u67b6\u6784\u8bbe\u8ba1", "\u7cfb\u7edf\u8bbe\u8ba1"], "score": 500000, "level": "technical"},
-    {"keywords": ["\u8bc1\u660e", "\u63a8\u5bfc", "proof", "theorem", "derive", "formal", "deduce", "\u63a8\u7406", "\u8bba\u8bc1"], "score": 1000000, "level": "derivation"},
-    {"keywords": ["\u8bba\u6587", "research", "methodology", "\u5b9e\u9a8c", "experiment", "novel", "contribution", "state of the art", "SOTA"], "score": 800000, "level": "academic"},
+    # Simple chat / social (minimal thinking)
+    {"keywords": ["你好", "hello", "hi", "hey", "谢谢", "thanks", "bye", "再见", "good"], "score": 500, "level": "chat"},
+    # Simple factual lookup (low thinking)
+    {"keywords": ["什么", "是谁", "在哪", "where", "when", "who", "what", "多少钱", "几点"], "score": 5000, "level": "simple_qa"},
+    # Factual explanation (moderate thinking)
+    {"keywords": ["是什么", "什么是", "哪个", "how", "which", "tell me", "describe"], "score": 20000, "level": "factual"},
+    # Causal / explanatory (substantial thinking)
+    {"keywords": ["为什么", "怎么", "原因", "解释", "explain", "why", "how does", "how to"], "score": 100000, "level": "explanation"},
+    # Analytical (heavy thinking)
+    {"keywords": ["分析", "比较", "优缺点", "pros", "cons", "compare", "contrast", "利弊",
+                  "区别", "差异", "different", "similarities"], "score": 300000, "level": "analysis"},
+    # Technical / code (very heavy thinking)
+    {"keywords": ["算法", "架构", "代码", "code", "algorithm", "complexity", "函数",
+                  "实现", "implement", "design", "架构设计", "系统设计"], "score": 500000, "level": "technical"},
+    # Derivation / proof (maximum thinking)
+    {"keywords": ["证明", "推导", "proof", "theorem", "derive", "formal", "deduce",
+                  "推理", "论证"], "score": 1000000, "level": "derivation"},
+    # Academic / research (very heavy)
+    {"keywords": ["论文", "research", "methodology", "实验", "experiment", "novel",
+                  "contribution", "state of the art", "SOTA"], "score": 800000, "level": "academic"},
 ]
 
+
+def load_map(params_path):
+    """Load complexity map from params.json, or use defaults."""
+    if params_path and params_path.exists():
+        with open(params_path, "r", encoding="utf-8") as f:
+            p = json.load(f)
+        return p.get("complexity_map", DEFAULT_COMPLEXITY)
+    return DEFAULT_COMPLEXITY
+
+
+def save_map(params_path, complexity_map):
+    """Persist updated complexity map."""
+    if params_path and params_path.exists():
+        with open(params_path, "r", encoding="utf-8") as f:
+            p = json.load(f)
+    else:
+        p = {}
+    p["complexity_map"] = complexity_map
+    with open(params_path, "w", encoding="utf-8") as f:
+        json.dump(p, f, indent=2, ensure_ascii=False)
+
+
 def estimate_thinking(question, topic_sig, params_path, thinking_multiplier=3.0):
-    complexity_map = DEFAULT_COMPLEXITY
+    """
+    Estimate thinking tokens for a question based on its topic complexity.
+
+    Args:
+        question: Raw question text
+        topic_sig: Dict of {keyword: count} from topic_embed.py
+        thinking_multiplier: Fallback multiplier if no topic match
+
+    Returns:
+        dict with estimated_thinking, complexity_score, matched_level
+    """
+    complexity_map = load_map(params_path)
+
+    if not question and not topic_sig:
+        return {"estimated_thinking": 0, "complexity_score": 0, "matched_level": "none"}
+
+    # Build reverse lookup: keyword → score
     keyword_to_score = {}
     keyword_to_level = {}
     for entry in complexity_map:
         for kw in entry["keywords"]:
             keyword_to_score[kw] = entry["score"]
             keyword_to_level[kw] = entry["level"]
+
+    # Score from topic_sig (Chinese keywords)
     sig_score = 0
     sig_count = 0
+    matched_keywords = []
     highest_level = "chat"
-    level_order = ["chat", "simple_qa", "factual", "explanation", "analysis", "technical", "academic", "derivation"]
+
     if topic_sig:
         for kw, count in topic_sig.items():
             if kw in keyword_to_score:
                 sig_score += keyword_to_score[kw] * count
                 sig_count += count
+                matched_keywords.append(kw)
                 lvl = keyword_to_level.get(kw, "chat")
-                if level_order.index(lvl) > level_order.index(highest_level): highest_level = lvl
+                # Track highest level
+                level_order = ["chat", "simple_qa", "factual", "explanation",
+                              "analysis", "technical", "academic", "derivation"]
+                if level_order.index(lvl) > level_order.index(highest_level):
+                    highest_level = lvl
+
+    # Score from raw question text (Chinese + English keywords)
     text_score = 0
     text_count = 0
     if question:
         q_lower = question.lower()
         for kw, sc in keyword_to_score.items():
-            if len(kw) <= 2 and not any('\u4e00' <= c <= '\u9fff' for c in kw): continue
+            # Skip very short English-only keywords (a, in, of), but keep Chinese 2-char keywords
+            if len(kw) <= 2 and not any('\u4e00' <= c <= '\u9fff' for c in kw):
+                continue
             if kw in q_lower:
                 text_score += sc
                 text_count += 1
                 lvl = keyword_to_level.get(kw, "chat")
-                if level_order.index(lvl) > level_order.index(highest_level): highest_level = lvl
+                level_order = ["chat", "simple_qa", "factual", "explanation",
+                              "analysis", "technical", "academic", "derivation"]
+                if level_order.index(lvl) > level_order.index(highest_level):
+                    highest_level = lvl
+
+    # Average score
     total_count = sig_count + text_count
     if total_count > 0:
         avg_score = (sig_score + text_score) / total_count
     else:
+        # No keywords matched — use base fallback based on question length
         q_len = len(question) if question else 0
-        if q_len < 10: avg_score = 2000
-        elif q_len < 50: avg_score = 10000
-        elif q_len < 200: avg_score = 50000
-        else: avg_score = 200000
+        if q_len < 10:
+            avg_score = 2000
+            highest_level = "chat"
+        elif q_len < 50:
+            avg_score = 10000
+            highest_level = "simple_qa"
+        elif q_len < 200:
+            avg_score = 50000
+            highest_level = "factual"
+        else:
+            avg_score = 200000
+            highest_level = "analysis"
+
+    # Scale by thinking_multiplier (configurable)
     estimated = int(avg_score * max(thinking_multiplier, 0.1))
-    return {"estimated_thinking": estimated, "complexity_score": round(avg_score, 0), "matched_level": highest_level, "thinking_multiplier": thinking_multiplier}
+
+    return {
+        "estimated_thinking": estimated,
+        "complexity_score": round(avg_score, 0),
+        "matched_level": highest_level,
+        "keyword_matches": matched_keywords[:5],
+        "thinking_multiplier": thinking_multiplier
+    }
+
+
+def calibrate(topic_sig, adjustment, params_path):
+    """
+    Calibrate complexity map based on user feedback.
+    adjustment > 1.0 = increase complexity (user contested, model under-thought)
+    adjustment < 1.0 = decrease complexity (overthinking simple questions)
+    """
+    complexity_map = load_map(params_path)
+    if not topic_sig:
+        # No topic to calibrate against — adjust all levels slightly
+        for entry in complexity_map:
+            entry["score"] = int(entry["score"] * adjustment)
+    else:
+        # Adjust levels matching the topic
+        for kw in topic_sig:
+            for entry in complexity_map:
+                if kw in entry["keywords"]:
+                    entry["score"] = int(entry["score"] * adjustment)
+
+    save_map(params_path, complexity_map)
+    return {"status": "calibrated", "adjustment": adjustment}
+
 
 def main():
     data = json.loads(sys.stdin.read())
     mode = data.get("mode", "estimate")
+    project_dir = data.get("project_dir", "")
+    params_path = Path(project_dir) / "hallucination-watch" / "params.json" if project_dir else None
+
     if mode == "estimate":
-        result = estimate_thinking(data.get("question",""), data.get("topic_sig",{}), None, data.get("thinking_multiplier",3.0))
+        result = estimate_thinking(
+            data.get("question", ""),
+            data.get("topic_sig", {}),
+            params_path,
+            data.get("thinking_multiplier", 3.0)
+        )
         print(json.dumps(result))
+
+    elif mode == "calibrate":
+        result = calibrate(
+            data.get("topic_sig", {}),
+            data.get("adjustment", 1.2),
+            params_path
+        )
+        print(json.dumps(result))
+
 
 if __name__ == "__main__":
     main()
