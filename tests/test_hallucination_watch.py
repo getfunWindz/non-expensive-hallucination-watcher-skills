@@ -618,3 +618,82 @@ class TestReviewFeedback(unittest.TestCase):
         self.assertIn(sid, r["removed"])
         self.assertNotIn(orphan, r["removed"], "孤儿会话不应被误删")
         self.assertTrue(os.path.exists(od))
+
+
+# ── 13. 灵敏度修复回归测试（fuzzy 降权 / 红旗硬触发） ─────
+
+class TestSensitivityFix(unittest.TestCase):
+    def setUp(self):
+        import hallucination_watch_mcp as m
+        self.m = m
+        self.tmp = tempfile.mkdtemp()
+        self.skill_dir = os.path.join(self.tmp, "skill")
+        self.sessions_dir = os.path.join(self.skill_dir, "sessions")
+        self.params_path = os.path.join(self.skill_dir, "params", "default.json")
+        os.makedirs(os.path.join(self.skill_dir, "params"), exist_ok=True)
+        shutil.copy(os.path.join(os.path.dirname(SCRIPTS), "params", "default.json"), self.params_path)
+        self.proj_root = os.path.join(self.tmp, "proj")
+        os.makedirs(self.proj_root)
+        m.SESSIONS_DIR = self.sessions_dir
+        m.PARAMS_PATH = self.params_path
+        m.PROJ_ROOT = self.proj_root
+        m.HW_ACTIVE = os.path.join(self.proj_root, ".hw_active")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_fuzzy_unrelated_topic_zero_score(self):
+        """修复1: 话题完全无关时 fuzzy 应为 0 分（不再固定 10 分）"""
+        r = fz_process("量子纠缠态坍缩概率分布。", "今天食堂的红烧肉非常好吃。", 7)
+        self.assertEqual(r["score"], 0, f"无关话题应 0 分，实际 {r['score']}")
+
+    def test_fuzzy_partial_similarity_scores(self):
+        """修复1: 部分相似（0.3~0.7）才计分"""
+        # 构造指纹部分重叠：前 3 字符相同、后 4 不同（7 字符指纹相似度 3/7≈0.43）
+        fp_a = "abcdxyz"
+        from signal_fuzzy import compare
+        sim, score = compare(fp_a, "abc1234")
+        self.assertGreaterEqual(sim, 0.3)
+        self.assertGreater(score, 0, "部分相似应计分")
+
+    def test_fuzzy_identical_zero_score(self):
+        """修复1: 完全相同（重复）不计分（重复由 consistency 信号负责）"""
+        from signal_fuzzy import compare
+        sim, score = compare("abcdefg", "abcdefg")
+        self.assertEqual(sim, 1.0)
+        self.assertEqual(score, 0)
+
+    def test_red_flag_two_hard_trigger_mark(self):
+        """修复2: 红旗词 ≥2 硬触发 mark（不依赖密度）"""
+        text = "我毫无疑问可以确定方案没有问题，百分百可靠。"  # 毫无疑问 + 百分百 = 2 红旗
+        sid = json.loads(self._run(self.m.hw_init()))["session_id"]
+        r = json.loads(self._run(self.m.hw_check(text, "")))
+        self.assertEqual(r["zone"], "mark", f"2 个红旗词应硬触发 mark，实际 {r['zone']}")
+        self.assertTrue(r["triggered"])
+        # risk_pct 被抬升至 ≥100 保持自洽
+        self.assertGreaterEqual(r["risk_pct"], 100.0)
+        # rec 中应记录硬触发
+        import json as _json
+        sd = os.path.join(self.sessions_dir, sid)
+        rec = _json.loads(_read_json(os.path.join(sd, "turns.json"), encoding="utf-8"))["turns"][0]
+        self.assertTrue(rec.get("red_flag_hard_trigger", False))
+
+    def test_red_flag_one_no_hard_trigger(self):
+        """修复2: 1 个红旗词不硬触发，走正常判定"""
+        text = "这个方案绝对没有问题。"  # 只有 1 个绝对（普通词），无红旗
+        self._run(self.m.hw_init())
+        r = json.loads(self._run(self.m.hw_check(text, "")))
+        self.assertFalse(r.get("red_flag_hard_trigger"), "正常路径应无硬触发")  # 字段稳定存在但为 False
+        self.assertLess(r["risk_pct"], 100.0)
+
+    def test_red_flag_expanded_keywords(self):
+        """修复3: 红旗词表扩充后「百分之百/绝对保证」应被识别"""
+        import json as _json
+        with open(self.params_path, encoding="utf-8") as f:
+            p = _json.load(f)
+        rfs = p["red_flag_keywords"]
+        self.assertIn("百分之百", rfs)
+        self.assertIn("绝对保证", rfs)

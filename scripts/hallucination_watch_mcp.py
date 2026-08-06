@@ -230,7 +230,14 @@ async def hw_check(text: str, prev_text: str = "") -> str:
     phase = "baseline" if tn <= mn else ("active" if tn > mx else ("baseline" if tn <= (mn+mx)//2 else "active"))
 
     zone = "safe"; triggered = False
-    if risk_pct >= 100 and risk_pct < 250:
+    red_flag_hard_trigger = False
+    # 硬触发：红旗词 ≥2 直接 mark（不依赖密度归一化，防长文本稀释）
+    red_count = len(kw_r.get("red_flags", []))
+    if red_count >= 2:
+        zone = "mark"; triggered = True
+        red_flag_hard_trigger = True
+        risk_pct = max(risk_pct, 100.0)  # 抬升至阈值线保持 zone/百分比自洽
+    elif risk_pct >= 100 and risk_pct < 250:
         zone = "mark"; triggered = True
     elif risk_pct >= 250:
         zone = "verify"; triggered = True
@@ -263,7 +270,8 @@ async def hw_check(text: str, prev_text: str = "") -> str:
         "redundancy_score": rd_score,
         "habit_anomaly": ha_score,
         "risk_raw": round(risk_raw, 3), "risk_pct": round(risk_pct, 1),
-        "zone": zone, "triggered": triggered, "correction": correction
+        "zone": zone, "triggered": triggered, "red_flag_hard_trigger": red_flag_hard_trigger,
+        "correction": correction
     }
     turns["turns"].append(rec)
     session["next_turn"] = tn + 1
@@ -293,6 +301,7 @@ async def hw_check(text: str, prev_text: str = "") -> str:
     report = {
         "zone": zone, "phase": phase, "turn": tn,
         "risk_pct": round(risk_pct, 1), "triggered": triggered,
+        "red_flag_hard_trigger": red_flag_hard_trigger,
         "signals": {
             "keyword": {"score": round(kw_score, 2), "matches": len(kw_r.get("matched", [])), "red_flags": len(kw_r.get("red_flags", []))},
             "consistency": {"score": round(cs_r.get("score", 0), 2)},

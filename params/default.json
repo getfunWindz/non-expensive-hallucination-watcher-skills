@@ -1,1 +1,42 @@
-{"keywords": ["\u4e00\u5b9a", "\u7edd\u5bf9", "\u6240\u6709", "\u4efb\u4f55", "\u6700\u597d", "\u5168\u90e8", "\u5b8c\u7f8e", "\u5fc5\u7136", "\u6beb\u65e0"], "red_flag_keywords": ["\u6beb\u65e0\u7591\u95ee", "\u6bcb\u5eb8\u7f6e\u7591", "\u53ef\u4ee5\u80af\u5b9a", "\u767e\u5206\u767e", "\u786e\u5b9a\u65e0\u7591", "\u7edd\u5bf9\u4fdd\u8bc1"], "density_multiplier": 10, "threshold": 22.0, "k_chars": 7, "num_bins": 5, "redundancy_tokens_per_increment": 1000, "redundancy_increment": 5, "min_baseline_n": 3, "max_baseline_n": 10, "adaptation_interval": 10, "correction_enabled": false, "max_claims_per_trigger": 3, "target_trigger_rate": 0.1, "rate_margin": 0.02, "ema_alpha": 0.3, "threshold_increase_factor": 1.1, "threshold_decrease_factor": 0.9, "topic_similarity_threshold": 0.15}
+{
+  "keywords": [
+    "一定",
+    "绝对",
+    "所有",
+    "任何",
+    "最好",
+    "全部",
+    "完美",
+    "必然",
+    "毫无"
+  ],
+  "red_flag_keywords": [
+    "毫无疑问",
+    "毋庸置疑",
+    "可以肯定",
+    "百分百",
+    "确定无疑",
+    "绝对保证",
+    "百分之百",
+    "万无一失",
+    "绝无可能",
+    "必然成功"
+  ],
+  "density_multiplier": 10,
+  "threshold": 22.0,
+  "k_chars": 7,
+  "num_bins": 5,
+  "redundancy_tokens_per_increment": 1000,
+  "redundancy_increment": 5,
+  "min_baseline_n": 3,
+  "max_baseline_n": 10,
+  "adaptation_interval": 10,
+  "correction_enabled": false,
+  "max_claims_per_trigger": 3,
+  "target_trigger_rate": 0.1,
+  "rate_margin": 0.02,
+  "ema_alpha": 0.3,
+  "threshold_increase_factor": 1.1,
+  "threshold_decrease_factor": 0.9,
+  "topic_similarity_threshold": 0.15
+}

@@ -31,15 +31,24 @@ def hash_fingerprint(fp):
     return hashlib.md5(fp.encode('utf-8')).hexdigest()[:8]
 
 def compare(prev_fp, curr_fp):
-    """Compare two fingerprints. Returns similarity (0-1) and score."""
+    """Compare two fingerprints. Returns similarity (0-1) and score.
+
+    降权设计（修复灵敏度）：只在「部分相似」（0.3~0.7）时计分。
+    - 完全无关（<0.3）：正常话题变化，不计分
+    - 部分相似（0.3~0.7）：模糊重叠，可疑，计分
+    - 高度重复（>0.7）：重复由 consistency 信号负责，不计分
+    """
     if not prev_fp or not curr_fp:
         return 0.0, 0
     # Character overlap similarity
     shared = sum(1 for a, b in zip(prev_fp, curr_fp) if a == b)
     max_len = max(len(prev_fp), len(curr_fp))
     similarity = shared / max_len if max_len > 0 else 0
-    # Score: inverted similarity (low similarity = high score)
-    score = (1 - similarity) * 10
+    # Score: only partial similarity (0.3~0.7) is suspicious
+    if 0.3 <= similarity <= 0.7:
+        score = (1 - similarity) * 10
+    else:
+        score = 0.0
     return round(similarity, 3), round(score, 2)
 
 def process(text, prev_text, k=7):
