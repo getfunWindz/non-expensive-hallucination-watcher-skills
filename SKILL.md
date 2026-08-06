@@ -12,16 +12,27 @@ metadata:
 
 ## 触发
 
-用户说出"启动幻觉监测"或类似意思 → 调用 `hw_init` MCP 工具。
+用户说出"启动幻觉监测"或类似意思 → 调用 `hw_init` MCP 工具（可传 `session_name` 绑定当前 pi 会话）。
+
+## 启停流程（会话级生命周期）
+
+1. **启动**：用户说「启动幻觉监测」→ `hw_init(session_name=当前会话名)` → 该会话数据目录 `sessions/<会话名>/` 生成 session.json / turns.json / reference.json，AGENTS.md 注入规则
+2. **监测中**：每轮回复调用 `hw_check(text=回复, prev_text=上一轮)`
+3. **关闭**：用户说「关闭幻觉监测」→ 调用 `hw_stop` → 移除激活标记与 AGENTS.md 规则，**数据保留**；之后 `hw_check` 返回 not active
+4. **确认清理**：关闭后**必须询问用户**「是否需要清除该会话的 json 数据？」：
+   - 用户回答「清除/删除」→ 调用 `hw_reset`（彻底删除该会话数据）
+   - 用户回答「不清除/保留」→ 数据留在 `sessions/` 下，可随时 `hw_init` 恢复复用（返回 reused）
+5. **查看状态**：`hw_status`（仅激活时可用）
 
 ## MCP 工具
 
 | Tool | Description |
 |:---|:---|
-| `hw_init` | 初始化/复用会话 + 写入 AGENTS.md 监测规则 |
-| `hw_check` | 对回复执行 6 信号监测 + 可选纠错，返回 zone/risk_pct |
-| `hw_status` | 查看累计状态和最近 3 轮摘要 |
-| `hw_reset` | 重置全部数据 + 清理标记和 AGENTS.md 规则 |
+| `hw_init` | 初始化/复用会话（可传 session_name）+ 写入 AGENTS.md 监测规则 |
+| `hw_check` | 对回复执行 6 信号监测 + 可选纠错，返回 zone/risk_pct（仅激活时） |
+| `hw_status` | 查看累计状态和最近 3 轮摘要（仅激活时） |
+| `hw_stop` | 停止监测：移除标记与规则，保留数据（关闭后询问用户是否清除） |
+| `hw_reset` | 彻底删除当前会话数据 + 清理标记和 AGENTS.md 规则 |
 
 ## 6 信号
 

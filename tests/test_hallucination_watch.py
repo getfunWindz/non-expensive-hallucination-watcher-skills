@@ -697,3 +697,73 @@ class TestSensitivityFix(unittest.TestCase):
         rfs = p["red_flag_keywords"]
         self.assertIn("百分之百", rfs)
         self.assertIn("绝对保证", rfs)
+
+
+# ── 14. 会话级监测生命周期（hw_stop / 会话名 / 激活门控） ─────
+
+class TestSessionLifecycle(unittest.TestCase):
+    def setUp(self):
+        import hallucination_watch_mcp as m
+        self.m = m
+        self.tmp = tempfile.mkdtemp()
+        self.skill_dir = os.path.join(self.tmp, "skill")
+        self.sessions_dir = os.path.join(self.skill_dir, "sessions")
+        self.params_path = os.path.join(self.skill_dir, "params", "default.json")
+        os.makedirs(os.path.join(self.skill_dir, "params"), exist_ok=True)
+        shutil.copy(os.path.join(os.path.dirname(SCRIPTS), "params", "default.json"), self.params_path)
+        self.proj_root = os.path.join(self.tmp, "proj")
+        os.makedirs(self.proj_root)
+        m.SESSIONS_DIR = self.sessions_dir
+        m.PARAMS_PATH = self.params_path
+        m.PROJ_ROOT = self.proj_root
+        m.HW_ACTIVE = os.path.join(self.proj_root, ".hw_active")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_init_with_session_name(self):
+        """hw_init 支持会话名：数据落在 sessions/<会话名>/ 下"""
+        r = json.loads(self._run(self.m.hw_init(session_name="my-pi-session")))
+        self.assertEqual(r["status"], "ok")
+        self.assertTrue(os.path.isdir(os.path.join(self.sessions_dir, "my-pi-session")),
+                        "应按会话名创建数据目录")
+        # 幂等复用同名会话
+        r2 = json.loads(self._run(self.m.hw_init(session_name="my-pi-session")))
+        self.assertEqual(r2["status"], "reused")
+        self.assertEqual(r2["session_id"], "my-pi-session")
+
+    def test_stop_keeps_data_removes_marker(self):
+        """hw_stop：停止监测（删标记+规则），但保留会话 json 数据"""
+        sid = json.loads(self._run(self.m.hw_init()))["session_id"]
+        sd = os.path.join(self.sessions_dir, sid)
+        r = json.loads(self._run(self.m.hw_stop()))
+        self.assertEqual(r["status"], "stopped")
+        self.assertFalse(os.path.exists(self.m.HW_ACTIVE), "停止后应移除激活标记")
+        self.assertTrue(os.path.exists(sd), "停止后应保留会话数据")
+
+    def test_check_requires_active_marker(self):
+        """hw_check 仅在激活状态下工作；停止后应返回 not active（不静默回退扫描）"""
+        sid = json.loads(self._run(self.m.hw_init()))["session_id"]
+        self._run(self.m.hw_check("第一轮正常回复。", ""))
+        # 停止后
+        self._run(self.m.hw_stop())
+        r = json.loads(self._run(self.m.hw_check("停止后的回复。", "")))
+        self.assertIn("error", r)
+        self.assertIn("not active", r["error"])
+
+    def test_resume_after_stop_reuses_data(self):
+        """停止后再 init：复用原会话数据（不新建）"""
+        sid = json.loads(self._run(self.m.hw_init()))["session_id"]
+        self._run(self.m.hw_check("第一轮回复内容。", ""))
+        self._run(self.m.hw_stop())
+        r = json.loads(self._run(self.m.hw_init()))
+        self.assertEqual(r["status"], "reused")
+        self.assertEqual(r["session_id"], sid)
+        # 数据保留（含第一轮记录）
+        import json as _json
+        sd = os.path.join(self.sessions_dir, sid)
+        turns = _json.loads(_read_json(os.path.join(sd, "turns.json"), encoding="utf-8"))["turns"]
+        self.assertEqual(len(turns), 1, "复用会话应保留历史数据")

@@ -135,12 +135,12 @@ def _remove_agents_rule():
     name="hw_init",
     annotations={"title": "Init Monitoring Session", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 )
-async def hw_init() -> str:
+async def hw_init(session_name: str = "") -> str:
     """初始化（或复用）幻觉监测会话。
 
     幂等设计：若 .hw_active 存在且指向有效 session，直接复用。
-    不再每次创建新 session，避免 opencode 重启后重复创建。
-    同时在 AGENTS.md 中追加监测规则，确保每次提示词都包含规范。
+    可传 session_name 指定会话名（如 pi 会话名），数据落在 sessions/<session_name>/；
+    不传则用时间戳。同时在 AGENTS.md 中追加监测规则。
     返回当前有效会话 ID。
     """
     sessions_dir = SESSIONS_DIR
@@ -157,8 +157,21 @@ async def hw_init() -> str:
         if os.path.exists(existing_sd):
             return json.dumps({"status": "reused", "session_id": existing_sid, "note": "AGENTS.md 已追加监测规则"})
 
-    # 否则创建新 session
-    sid = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    # 停止后恢复：若存在 .last_stopped 且数据有效，复用该会话（不新建）
+    last_path = os.path.join(sessions_dir, ".last_stopped")
+    if os.path.exists(last_path):
+        with open(last_path, encoding='utf-8') as f:
+            last_sid = f.read().strip()
+        if last_sid and os.path.isdir(os.path.join(sessions_dir, last_sid)):
+            os.remove(last_path)
+            with open(HW_ACTIVE, "w") as f:
+                f.write(last_sid)
+            return json.dumps({"status": "reused", "session_id": last_sid,
+                               "note": "已恢复上次停止的监测会话（数据保留）"})
+
+    # 会话名优先，否则时间戳
+    sid = (session_name.strip() if session_name and session_name.strip()
+           else datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S"))
     sd = os.path.join(sessions_dir, sid)
     os.makedirs(sd, exist_ok=True)
     now = datetime.now(timezone.utc).isoformat()
@@ -195,6 +208,10 @@ async def hw_check(text: str, prev_text: str = "") -> str:
     _load_signals()
     sessions_dir = SESSIONS_DIR
     os.makedirs(sessions_dir, exist_ok=True)
+
+    # 激活门控：仅在有 .hw_active 标记时监测（停止后不再静默回退扫描）
+    if not os.path.exists(HW_ACTIVE):
+        return json.dumps({"error": "monitoring not active. call hw_init first"})
 
     sid = _active_session(sessions_dir)
     if not sid:
@@ -317,6 +334,32 @@ async def hw_check(text: str, prev_text: str = "") -> str:
     return json.dumps(report, ensure_ascii=False)
 
 @mcp.tool(
+    name="hw_stop",
+    annotations={"title": "Stop Monitoring", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
+)
+async def hw_stop() -> str:
+    """停止幻觉监测（不删除数据）。
+
+    移除 .hw_active 标记与 AGENTS.md 规则，会话 json 数据保留在 sessions/ 下。
+    之后 hw_check 将返回 not active；重新 hw_init 会复用原会话数据。
+    如需彻底清除数据，请调用 hw_reset。
+    """
+    _remove_agents_rule()
+    sid = None
+    if os.path.exists(HW_ACTIVE):
+        with open(HW_ACTIVE, encoding='utf-8') as f:
+            sid = f.read().strip()
+        os.remove(HW_ACTIVE)
+        # 记录最近停止的会话（供 hw_init 恢复复用）
+        if sid:
+            with open(os.path.join(SESSIONS_DIR, ".last_stopped"), "w") as f:
+                f.write(sid)
+    if sid:
+        return json.dumps({"status": "stopped", "session_id": sid,
+                           "note": "监测已停止，数据保留在 sessions/ 下（如需清除请调用 hw_reset）"})
+    return json.dumps({"status": "stopped", "note": "监测未激活，无需停止"})
+
+@mcp.tool(
     name="hw_status",
     annotations={"title": "Monitoring Session Status", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
 )
@@ -324,9 +367,11 @@ async def hw_status() -> str:
     """查看当前监测会话的累计状态。
 
     返回会话轮次、检查次数、告警次数、参考素材条目数、
-    习惯画像、最近3轮监测记录摘要。
+    习惯画像、最近3轮监测记录摘要。仅在监测激活时可用。
     """
     sessions_dir = SESSIONS_DIR
+    if not os.path.exists(HW_ACTIVE):
+        return json.dumps({"status": "not active", "note": "监测未激活。调用 hw_init 启动，或查看 sessions/ 下的历史数据。"})
     sid = _active_session(sessions_dir)
     if not sid:
         return json.dumps({"status": "no active session"})
