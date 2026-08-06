@@ -99,6 +99,8 @@ def check(project_root):
 
 
 if __name__ == "__main__":
-    project_root = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 默认 project_root 与 monitor/MCP 对齐：HW_PROJECT_ROOT 环境变量优先，回退 cwd。
+    # （旧默认是 skill 目录，其中永远没有 .hw_active → 履约检查被静默绕过）
+    project_root = sys.argv[1] if len(sys.argv) > 1 else (os.environ.get("HW_PROJECT_ROOT") or os.getcwd())
     result = check(project_root)
     print(json.dumps(result, ensure_ascii=False))

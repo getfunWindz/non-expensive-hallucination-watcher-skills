@@ -9,10 +9,11 @@ signal_material.py — 参考素材一致性检查（集成话题嵌入）。
   3. 仅话题相似度超过阈值时，才检查新旧声明是否存在矛盾
   4. 将新声明存入 reference.json
 """
-import re, json, sys, os, datetime
+import re, json, sys, os, datetime, hashlib
 from signal_topic import extract as topic_extract, similarity as topic_similarity
 
 TOPIC_THRESHOLD = 0.15
+MAX_REFERENCE_ENTRIES = 50  # 条目上限：防止长会话中 reference.json 无限增长
 
 # 声明提取触发词：必须与 has_contradiction 的矛盾对正面词保持一致，
 # 否则「支持/不支持」这类矛盾永远检测不到。
@@ -75,11 +76,19 @@ def add_entry(entries, text):
     claims = extract_claims(text)
     topic = topic_extract(text, 5)
     if claims:
+        fp = hashlib.md5(text.encode('utf-8')).hexdigest()[:16]
+        # 与最近一条声明同文本时跳过（去重，避免同轮/重复回复反复入库）
+        if entries and entries[-1].get("fp") == fp:
+            return entries
         entries.append({
             "claims": claims,
             "topic": topic,
+            "fp": fp,
             "timestamp": datetime.datetime.utcnow().isoformat()
         })
+        # 上限：保留最近 MAX_REFERENCE_ENTRIES 条（滑动窗口）
+        if len(entries) > MAX_REFERENCE_ENTRIES:
+            entries = entries[-MAX_REFERENCE_ENTRIES:]
     return entries
 
 if __name__ == "__main__":

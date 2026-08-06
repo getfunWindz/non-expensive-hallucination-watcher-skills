@@ -56,7 +56,7 @@ metadata:
 
 ## 配置
 
-`params/default.json`，18 个参数。核心可调：
+`params/default.json`，19 个参数。核心可调：
 
 | Parameter | Default | Purpose |
 |:---|:---:|:---|

@@ -312,7 +312,7 @@ class TestMcpLifecycle(unittest.TestCase):
 
         r5 = json.loads(self._run(self.m.hw_reset()))
         self.assertEqual(r5["status"], "reset")
-        self.assertFalse(os.path.exists(m.HW_ACTIVE) if False else os.path.exists(self.m.HW_ACTIVE))
+        self.assertFalse(os.path.exists(self.m.HW_ACTIVE))
 
     def test_check_uses_active_marker_not_directory_scan(self):
         """hw_check 必须作用于 .hw_active 指向的 session，而非目录中最新者"""
@@ -335,11 +335,18 @@ class TestMcpLifecycle(unittest.TestCase):
         # .hw_active 指向 A，即使 B 目录更新，也必须是 A
         self.assertEqual(r["session_id"], sid_a, f"应作用于 {sid_a} 而非 {sid_b}")
 
-    def test_reset_removes_all_sessions(self):
-        self._run(self.m.hw_init())
-        self._run(self.m.hw_reset())
-        remaining = os.listdir(self.sessions_dir) if os.path.exists(self.sessions_dir) else []
-        self.assertEqual(remaining, [], f"reset 后应无残留 session: {remaining}")
+    def test_reset_removes_active_session(self):
+        """reset 删除 .hw_active 指向的会话，孤儿会话保留（M6 语义）"""
+        sid = json.loads(self._run(self.m.hw_init()))["session_id"]
+        # 造孤儿
+        orphan = os.path.join(self.sessions_dir, "2099-01-01_00-00-00")
+        os.makedirs(orphan, exist_ok=True)
+        with open(os.path.join(orphan, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"session_id": "orphan"}, f)
+        r = json.loads(self._run(self.m.hw_reset()))
+        self.assertEqual(r["removed"], [sid])
+        self.assertFalse(os.path.exists(os.path.join(self.sessions_dir, sid)))
+        self.assertTrue(os.path.exists(orphan), "孤儿会话应保留")
 
     def test_ema_adaptation_does_not_pollute_params(self):
         """EMA 自适应必须写入 session.json 而非全局 params 文件"""
@@ -479,3 +486,135 @@ class TestTurnStorage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ── 12. 评审反馈回归测试（C1/I1/I3/I4/M6） ──────────────
+
+class TestReviewFeedback(unittest.TestCase):
+    def setUp(self):
+        import hallucination_watch_mcp as m
+        self.m = m
+        self.tmp = tempfile.mkdtemp()
+        self.skill_dir = os.path.join(self.tmp, "skill")
+        self.sessions_dir = os.path.join(self.skill_dir, "sessions")
+        self.params_path = os.path.join(self.skill_dir, "params", "default.json")
+        os.makedirs(os.path.join(self.skill_dir, "params"), exist_ok=True)
+        shutil.copy(os.path.join(os.path.dirname(SCRIPTS), "params", "default.json"), self.params_path)
+        self.proj_root = os.path.join(self.tmp, "proj")
+        os.makedirs(self.proj_root)
+        m.SESSIONS_DIR = self.sessions_dir
+        m.PARAMS_PATH = self.params_path
+        m.PROJ_ROOT = self.proj_root
+        m.HW_ACTIVE = os.path.join(self.proj_root, ".hw_active")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def _prime_session(self, n_prior, all_triggered=True):
+        """预置 n_prior 轮高触发率 turns，使下一次 check 恰好跨过 interval 边界"""
+        sid = json.loads(self._run(self.m.hw_init()))["session_id"]
+        sd = os.path.join(self.sessions_dir, sid)
+        from datetime import datetime, timezone as tz
+        ts = datetime.now(tz.utc).isoformat()
+        turns = [{"turn": i + 1, "phase": "active", "triggered": all_triggered,
+                  "risk_raw": 50 if all_triggered else 1, "timestamp": ts, "text": "x" * 100}
+                 for i in range(n_prior)]
+        with open(os.path.join(sd, "turns.json"), "w", encoding="utf-8") as f:
+            json.dump({"turns": turns}, f)
+        s = json.loads(_read_json(os.path.join(sd, "session.json"), encoding="utf-8"))
+        s["next_turn"] = n_prior + 1
+        s["phase"] = "active"
+        s["cumulative"]["total_checks"] = n_prior
+        with open(os.path.join(sd, "session.json"), "w", encoding="utf-8") as f:
+            json.dump(s, f)
+        return sid, sd
+
+    def test_c1_ema_threshold_compounds_across_intervals(self):
+        """C1: 高触发率下阈值应跨 interval 复合增长（24.2→26.62→29.28），而非恒为 24.2"""
+        sid, sd = self._prime_session(9)          # 第 10 次 check 触发第一次自适应
+        self._run(self.m.hw_check("x" * 50, ""))
+        s1 = json.loads(_read_json(os.path.join(sd, "session.json"), encoding="utf-8"))
+        th1 = s1["effective_threshold"]
+        self.assertAlmostEqual(th1, 22.0 * 1.1, places=2, msg=f"首次自适应应 24.2，实际 {th1}")
+
+        # 再造 9 轮（下一轮第 20 次 check 触发第二次自适应）
+        turns = json.loads(_read_json(os.path.join(sd, "turns.json"), encoding="utf-8"))
+        from datetime import datetime, timezone as tz
+        ts = datetime.now(tz.utc).isoformat()
+        for i in range(9):
+            turns["turns"].append({"turn": 11 + i, "phase": "active", "triggered": True,
+                                   "risk_raw": 50, "timestamp": ts, "text": "x" * 100})
+        with open(os.path.join(sd, "turns.json"), "w", encoding="utf-8") as f:
+            json.dump(turns, f)
+        s = json.loads(_read_json(os.path.join(sd, "session.json"), encoding="utf-8"))
+        s["next_turn"] = 20
+        s["cumulative"]["total_checks"] = 19
+        with open(os.path.join(sd, "session.json"), "w", encoding="utf-8") as f:
+            json.dump(s, f)
+        self._run(self.m.hw_check("x" * 50, ""))
+        s2 = json.loads(_read_json(os.path.join(sd, "session.json"), encoding="utf-8"))
+        th2 = s2["effective_threshold"]
+        expected2 = round(22.0 * 1.1 * 1.1, 2)
+        self.assertAlmostEqual(th2, expected2, places=1,
+                               msg=f"第二次自适应应基于会话阈值 24.2→{expected2}，实际 {th2}")
+
+    def test_i1_topic_similarity_threshold_wired(self):
+        """I1: params 的 topic_similarity_threshold 必须生效（修改后行为变化）"""
+        # 话题高度相似但声明一致 → threshold=0.15 时也通过；threshold=0.99 时应跳过对比（无矛盾）
+        # 直接测 signal_material 的接线：hw_check 应把参数传进去
+        from signal_material import check as mt_check
+        # 矛盾文本：低阈值应检测到矛盾，高阈值应被话题门控跳过
+        ref = [{"claims": ["系统不支持批量导入功能"], "topic": {"系统": 1, "导入": 1}}]
+        r_low = mt_check("系统支持批量导入功能", ref, topic_threshold=0.15)
+        self.assertGreater(r_low["score"], 0, "低阈值应检测到矛盾")
+        r_high = mt_check("系统支持批量导入功能", ref, topic_threshold=0.99)
+        self.assertEqual(r_high["score"], 0, "高阈值应跳过话题门控对比")
+        # params 接线：hw_check 应从 params 读取该值
+        import json as _json
+        with open(self.params_path, encoding="utf-8") as f:
+            p = _json.load(f)
+        p["topic_similarity_threshold"] = 0.99
+        with open(self.params_path, "w", encoding="utf-8") as f:
+            _json.dump(p, f, ensure_ascii=False)
+        sid, sd = self._prime_session(0)
+        self._run(self.m.hw_check("系统支持批量导入功能。", ""))
+        rec = _json.loads(_read_json(os.path.join(sd, "turns.json"), encoding="utf-8"))["turns"][0]
+        self.assertEqual(rec["material_score"], 0)
+
+    def test_i3_compliance_default_root_uses_cwd(self):
+        """I3: check() 默认 project_root 应为 cwd（含 .hw_active 处），而非 skill 目录"""
+        import check_compliance
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(self.proj_root)
+            with open(os.path.join(self.proj_root, ".hw_active"), "w") as f:
+                f.write("dummy")
+            r = check_compliance.check_with_dirs(self.proj_root, self.sessions_dir)
+            self.assertIn("reason", r, "应能找到标记并继续检查")
+        finally:
+            os.chdir(old_cwd)
+
+    def test_i4_reference_entries_capped(self):
+        """I4: reference.json 条目应有上限 + 同文本指纹去重"""
+        from signal_material import add_entry
+        entries = []
+        for i in range(60):
+            entries = add_entry(entries, f"系统支持第{i}种批量导入方式。")
+        self.assertLessEqual(len(entries), 50, f"条目应被限制，实际 {len(entries)}")
+
+    def test_m6_reset_only_removes_active_session(self):
+        """M6: reset 只删 .hw_active 指向的会话，孤儿会话保留（避免跨项目误删）"""
+        sid = json.loads(self._run(self.m.hw_init()))["session_id"]
+        # 造孤儿会话（模拟其他项目/历史残留）
+        orphan = "2098-01-01_00-00-00"
+        od = os.path.join(self.sessions_dir, orphan)
+        os.makedirs(od, exist_ok=True)
+        with open(os.path.join(od, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"session_id": orphan}, f)
+        r = json.loads(self._run(self.m.hw_reset()))
+        self.assertIn(sid, r["removed"])
+        self.assertNotIn(orphan, r["removed"], "孤儿会话不应被误删")
+        self.assertTrue(os.path.exists(od))

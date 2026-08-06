@@ -32,13 +32,10 @@ def check(text, prev_text, threshold_low=0.05, threshold_high=0.90):
 
     # Compare current claims against previous claims
     max_sim = 0
-    min_sim = 1
-    contradictions = []
     for c in claims:
         for p in prev_claims:
             sim = jaccard_similarity(c, p)
             max_sim = max(max_sim, sim)
-            min_sim = min(min_sim, sim)
 
     score = 0
     detail = "consistent"
@@ -49,7 +46,7 @@ def check(text, prev_text, threshold_low=0.05, threshold_high=0.90):
         score = 0.4  # too repetitive
         detail = "very high similarity with previous turn (repetition)"
 
-    return {"score": score, "detail": detail, "max_sim": round(max_sim, 3), "min_sim": round(min_sim, 3)}
+    return {"score": score, "detail": detail, "max_sim": round(max_sim, 3)}
 
 if __name__ == "__main__":
     stdin = sys.stdin.read().strip()

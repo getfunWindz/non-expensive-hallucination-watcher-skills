@@ -200,7 +200,7 @@ async def hw_check(text: str, prev_text: str = "") -> str:
     if not sid:
         return json.dumps({"error": "no session. call hw_init first"})
     sd = os.path.join(sessions_dir, sid)
-    params = _load_json(os.path.join(SKILL_DIR, "params", "default.json"))
+    params = _load_json(PARAMS_PATH)
     session = _load_json(os.path.join(sd, "session.json"))
     turns = _load_json(os.path.join(sd, "turns.json"))
     reference = _load_json(os.path.join(sd, "reference.json"))
@@ -214,7 +214,7 @@ async def hw_check(text: str, prev_text: str = "") -> str:
     kw_r = s['kw'](text, params)
     cs_r = s['cs'](text, prev_text)
     fz_r = s['fz'](text, prev_text, params.get("k_chars", 7))
-    mt_r = s['mt'](text, reference.get("entries", []))
+    mt_r = s['mt'](text, reference.get("entries", []), params.get("topic_similarity_threshold", 0.15))
     rd_score = s['rd'](total_text_len, params)
     bins = s['bins'](text, params.get("num_bins", 5))
     profile = s['profile'](session.get("habit_profile", {}), bins)
@@ -280,8 +280,10 @@ async def hw_check(text: str, prev_text: str = "") -> str:
     _save_json(os.path.join(sd, "session.json"), session)
     _save_json(os.path.join(sd, "reference.json"), reference)
 
-    # EMA threshold adaptation（per-session：写入 session.json，不污染全局 params）
-    adapt_r = s['adapt'](turns.get("turns", []), params)
+    # EMA threshold adaptation（per-session：基于会话有效阈值继续累计，不污染全局 params）
+    adapt_params = dict(params)
+    adapt_params["threshold"] = threshold  # 关键：从会话当前阈值起算，而非全局基准
+    adapt_r = s['adapt'](turns.get("turns", []), adapt_params)
     if adapt_r:
         session["effective_threshold"] = adapt_r.get("threshold")
         session["threshold_adapted_at"] = adapt_r.get("_adapted_at")
@@ -340,22 +342,21 @@ async def hw_status() -> str:
     annotations={"title": "Reset Monitoring Session", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False}
 )
 async def hw_reset() -> str:
-    """重置全部监测数据：删除所有 session、.hw_active 标记和 AGENTS.md 监测规则。"""
+    """重置当前监测会话：删除 .hw_active 指向的会话、标记和 AGENTS.md 规则。
+    孤儿会话（其他项目/历史残留）保留，避免跨项目误删。"""
     _remove_agents_rule()
     sessions_dir = SESSIONS_DIR
     removed = []
-    if os.path.exists(sessions_dir):
-        for sid in os.listdir(sessions_dir):
-            p = os.path.join(sessions_dir, sid)
-            if os.path.isdir(p):
-                import shutil
-                shutil.rmtree(p)
-                removed.append(sid)
+    sid = _active_session(sessions_dir)
+    if sid:
+        import shutil
+        shutil.rmtree(os.path.join(sessions_dir, sid))
+        removed.append(sid)
     if os.path.exists(HW_ACTIVE):
         os.remove(HW_ACTIVE)
     note = "AGENTS.md 规则已移除"
     if removed:
-        note += f"；已删除 {len(removed)} 个会话"
+        note += f"；已删除会话 {removed[0]}"
     return json.dumps({"status": "reset", "removed": removed, "note": note})
 
 if __name__ == "__main__":

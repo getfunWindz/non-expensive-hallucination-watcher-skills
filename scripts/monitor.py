@@ -122,7 +122,7 @@ def cmd_check(text, prev_text=""):
     fz_score = fz_r.get("score", 0)
 
     # 4. Reference material (cross-turn fact consistency)
-    mt_r = mt_check(text, reference.get("entries", []))
+    mt_r = mt_check(text, reference.get("entries", []), params.get("topic_similarity_threshold", 0.15))
     mt_score = mt_r.get("score", 0)
 
     # 5. Redundancy
@@ -175,6 +175,11 @@ def cmd_check(text, prev_text=""):
         "triggered": triggered,
         "correction": None
     }
+    if triggered and params.get("correction_enabled", False):
+        from signal_correction import prioritize as correct
+        kw_list = params.get("keywords", []) + params.get("red_flag_keywords", [])
+        prior = correct(text, kw_list, params.get("max_claims_per_trigger", 3))
+        rec["correction"] = {"claims": prior, "count": len(prior)}
     turns["turns"].append(rec)
 
     # Update session
@@ -195,7 +200,9 @@ def cmd_check(text, prev_text=""):
     save_json(os.path.join(sd, "reference.json"), reference)
 
     # ── EMA threshold adaptation（per-session：写入 session.json，不污染全局 params）──
-    adapt_result = adapt_threshold(turns.get("turns", []), params)
+    adapt_params = dict(params)
+    adapt_params["threshold"] = threshold  # 从会话当前阈值起算（C1）
+    adapt_result = adapt_threshold(turns.get("turns", []), adapt_params)
     if adapt_result:
         session["effective_threshold"] = adapt_result.get("threshold")
         session["threshold_adapted_at"] = adapt_result.get("_adapted_at")
@@ -240,6 +247,7 @@ def cmd_status():
     session = load_json(os.path.join(SESSIONS, sid, "session.json"))
     turns = load_json(os.path.join(SESSIONS, sid, "turns.json"))
     refs = load_json(os.path.join(SESSIONS, sid, "reference.json"))
+    cum = session.get("cumulative", {})  # 旧格式 session 防御（与 MCP 一致）
     last5 = [{"turn": t["turn"], "zone": t["zone"],
               "risk_pct": t["risk_pct"],
               "sig": {k: round(v, 2) if isinstance(v, float) else v
@@ -252,20 +260,43 @@ def cmd_status():
         "session_id": sid,
         "phase": session.get("phase"),
         "turn": session.get("next_turn"),
-        "checks": session["cumulative"]["total_checks"],
-        "alerts": session["cumulative"]["alert_count"],
+        "checks": cum.get("total_checks", 0),
+        "alerts": cum.get("alert_count", 0),
         "reference_entries": len(refs.get("entries", [])),
         "habit_profile": session.get("habit_profile"),
         "last_turns": last5
     }, indent=2, ensure_ascii=False))
 
+_HW_RULE_START = "<!-- hw-monitor:start -->"
+_HW_RULE_END = "<!-- hw-monitor:end -->"
+
+def _remove_agents_rule():
+    """从项目根 AGENTS.md 移除监测规则块（与 MCP 脚本一致）。"""
+    ap = os.path.join(_proj_root(), "AGENTS.md")
+    if not os.path.exists(ap):
+        return
+    with open(ap, encoding="utf-8") as f:
+        content = f.read()
+    start = content.find(_HW_RULE_START)
+    end = content.find(_HW_RULE_END)
+    if start >= 0 and end >= 0:
+        content = content[:start] + content[end + len(_HW_RULE_END):]
+        content = content.strip() + "\n"
+        with open(ap, "w", encoding="utf-8") as f:
+            f.write(content)
+
 def cmd_reset():
     sid = active_session()
+    _remove_agents_rule()
+    hw_active = os.path.join(_proj_root(), ".hw_active")
     if sid:
         import shutil; shutil.rmtree(sid_path(sid))
-        print(json.dumps({"status": "reset", "removed": sid}))
+    if os.path.exists(hw_active):
+        os.remove(hw_active)
+    if sid:
+        print(json.dumps({"status": "reset", "removed": sid, "note": "AGENTS.md 规则已移除"}))
     else:
-        print(json.dumps({"status": "nothing to reset"}))
+        print(json.dumps({"status": "reset", "note": "AGENTS.md 规则已移除"}))
 
 # ── CLI ────────────────────────────────────────────────
 if __name__ == "__main__":
