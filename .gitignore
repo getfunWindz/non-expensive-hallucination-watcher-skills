@@ -1,13 +1,5 @@
-# Python
 __pycache__/
 *.pyc
-*.pyo
-
-# Session data (user-specific, should not be committed)
 sessions/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
+*.tmp
+.hw_active

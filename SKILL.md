@@ -1,6 +1,9 @@
 ---
 name: hallucination-watch
 description: "User-activated hallucination risk monitor for LLM conversations. Uses 6 behavioral proxy signals (keyword density, self-consistency, fuzzy match, material consistency, redundancy, habit profile) with EMA threshold adaptation. Per-session isolation. MCP tools available: hw_init/hw_check/hw_status/hw_reset."
+metadata:
+  requires: [jieba, mcp, pydantic]
+  python: ">=3.9"
 ---
 
 # Hallucination Watch
@@ -33,19 +36,19 @@ description: "User-activated hallucination risk monitor for LLM conversations. U
 
 ## 决策
 
-`risk_raw = kw*10 + cs + fz + mt + rd + ha`
+`risk_raw = kw×10 + cs + fz + mt + rd + ha`
 
-`risk_pct = risk_raw / threshold * 100`
+`risk_pct = risk_raw / threshold × 100`
 
 | Zone | Criteria | Action |
 |:---|:---|:---|
 | Safe | < 100% | 静默 |
-| Mark | 100-250% | 展示卡片 |
-| Verify | >= 250% | 展示卡片 |
+| Mark | 100–250% | 展示卡片 |
+| Verify | ≥ 250% | 展示卡片 |
 
 ## EMA 自适应
 
-每 `adaptation_interval` 轮根据 `trigger_rate` 自动调整 `threshold`。
+每 `adaptation_interval` 轮根据 `trigger_rate` 自动调整 `threshold`。高于目标范围则升高阈值（减少误报），低于则降低（减少漏报）。
 
 ## 自动纠错
 
@@ -53,4 +56,11 @@ description: "User-activated hallucination risk monitor for LLM conversations. U
 
 ## 配置
 
-`params/default.json`，18 个参数。
+`params/default.json`，19 个参数。核心可调：
+
+| Parameter | Default | Purpose |
+|:---|:---:|:---|
+| threshold | 22 | 风险阈值 |
+| correction_enabled | false | 自动纠错开关 |
+| target_trigger_rate | 0.10 | EMA 目标触发率 |
+| topic_similarity_threshold | 0.15 | 话题门控门槛 |
