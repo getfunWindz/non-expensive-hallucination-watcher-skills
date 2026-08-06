@@ -1,147 +1,173 @@
 # Hallucination Watch · 幻觉监测
 
-**Language**: [中文](#chinese) | [English](#english)
+> A low-cost, user-activated hallucination risk screening skill for LLM conversations.
+> Uses 6 behavioral proxy signals with EMA threshold adaptation. Per-session isolation.
+>
+> 一款极低成本的幻觉检测与纠错 Skill，基于 6 个行为代理信号 + EMA 阈值自适应。
+> 按会话隔离，支持 MCP 工具集成。
 
 ---
 
-<a name="chinese"></a>
+## Overview / 概述
 
-## 中文介绍
+**English**
 
-### 概述
+This skill monitors LLM responses for hallucination risk using behavioral proxy signals — no expensive external API calls, no ground-truth oracles. When the user activates monitoring, every subsequent response is checked across 6 dimensions. Results are persisted per-session in JSON files for audit and analysis.
 
-Hallucination Watch 是一个**用户主动激活的幻觉风险监测系统**。它通过行为代理信号（而非事实核查）来估算 LLM 回答中可能存在的幻觉风险。
+**中文**
 
-### 工作原理
-
-系统追踪三个代理信号：
-
-| 信号 | 含义 | 来源 |
-|------|------|------|
-| **关键词密度** | 主观/绝对化用词在回答中的密度 | 关键词匹配 + token 归一化 |
-| **模糊匹配分数** | 跨轮次回答的字符级一致性 | `fuzzy_match.py` (difflib) |
-| **冗余分数** | 累积对话长度带来的风险递增 | `count_tokens.py` (tiktoken) |
-
-三个信号加权求和 → `formula_raw` → 与动态阈值比较 → 三区决策（Safe/Mark/Verify）。
-
-### 两阶段设计
-
-| 阶段 | 行为 |
-|------|------|
-| **Baseline** (前 N 轮) | 仅记录指标，构建习惯画像，不触发任何操作 |
-| **Active** (N+1 轮起) | 全面检测，达到阈值时触发纠错 |
-
-两个阶段之间的阈值校准是数据驱动的——当 baseline 指标的变异系数稳定在 0.3 以下时自动切入 Active。
-
-### 文件结构
-
-```
-{project_root}/hallucination-watch/
-├── params.json                    # 自适应阈值（学习层，动态覆盖）
-└── sessions/{session_id}/
-    ├── session.json               # 会话元数据 + 累计计数器
-    ├── turns.json                 # 每轮对话的完整指标数组
-    └── reference.json             # 参考资料条目（一致性检查）
-```
-
-### 关键改进
-
-本次重构（v2）彻底解决了旧版本的数据丢失问题：
-
-- **每个脚本独立持久化**：每个 pipeline 脚本都有 `record` 模式，计算完直接写入磁盘
-- **集中式数据访问层**：`session_store.py` 统一管理所有 JSON 文件的路径和读写逻辑
-- **完整 schema**：`turns.json` 记录每轮对话的全部指标，`session.json` 维护累计状态
-- **废弃 permanent.json**：其数据完全并入 `turns.json`
+本 Skill 通过行为代理信号对 LLM 回复进行幻觉风险监测——无需昂贵的第三方 API，不依赖真实标注。用户激活监测后，每次回复都经过 6 个维度的检查。结果按会话持久化为 JSON 文件，支持审计和分析。
 
 ---
 
-## 使用方式
+## Features / 特性
 
-用户说出触发短语之一即可激活：
-
-- `启动幻觉监测` / `开始监测` / `幻觉检测`
-- `start monitoring` / `hallucination check`
-
-停止监测：`停止监测` / `stop monitoring`
-
----
-
-<a name="english"></a>
-
-## English
-
-### Overview
-
-Hallucination Watch is a **user-activated hallucination risk monitor** that estimates hallucination probability in LLM responses using behavioural proxy signals — without requiring a ground-truth oracle or external verification on every turn.
-
-### How It Works
-
-Three proxy signals are tracked per conversation turn:
-
-| Signal | Meaning | Source |
-|--------|---------|--------|
-| **Keyword density** | Normalised count of subjective/absolute phrasing | Keyword matching + token normalisation |
-| **Fuzzy match score** | Cross-turn character-level consistency | `fuzzy_match.py` (difflib) |
-| **Redundancy score** | Cumulative conversation-length risk | `count_tokens.py` (tiktoken) |
-
-These are summed → `formula_raw` → compared against a dynamic threshold → three-zone decision (Safe / Mark / Verify).
-
-### Two-Phase Design
-
-| Phase | Behaviour |
-|-------|-----------|
-| **Baseline** (first N turns) | Record-only. Builds habit profile, collects formula_raw for calibration. No alerts. |
-| **Active** (turn N+1 onward) | Full detection. Corrections trigger when threshold is crossed. |
-
-The Baseline → Active transition is data-driven: it calibrates automatically when the coefficient of variation of baseline metrics drops below 0.3 (configurable).
-
-### File Structure
-
-```
-{project_root}/hallucination-watch/
-├── params.json                    # Self-adapted threshold (learning layer)
-└── sessions/{session_id}/
-    ├── session.json               # Session metadata + cumulative counters
-    ├── turns.json                 # Per-turn metric array
-    └── reference.json             # Reference material entries
-```
-
-### Key Improvements in v2
-
-This refactoring (v2) eliminates the critical data-loss problem of the previous version:
-
-- **Each script self-persists**: Every pipeline script has a `record` mode that writes directly to disk
-- **Unified data access layer**: `session_store.py` centralises all JSON file paths and read/write logic
-- **Complete schema**: `turns.json` captures every metric per turn; `session.json` maintains cumulative state
-- **`permanent.json` removed**: Its data is fully merged into `turns.json`
-
-### Usage
-
-Say one of the trigger phrases to start:
-
-- `start monitoring` / `hallucination check` / `activate shelter`
-- `启动幻觉监测` / `开始监测` / `幻觉检测`
-
-Stop with: `stop monitoring` / `停止监测`
-
-### Scripts Reference
-
-| Script | Function |
-|--------|----------|
-| `session_store.py` | Unified data access layer (read/write turns.json, session.json) |
-| `init_skill.py` | Initialise session directory and data files |
-| `topic_embed.py` | Topic signature extraction + Jaccard similarity |
-| `fuzzy_match.py` | Hash-based char extraction + difflib fuzzy comparison |
-| `count_tokens.py` | Token counting via tiktoken (cl100k_base) |
-| `complexity_estimator.py` | Question complexity → thinking token estimate |
-| `calc_habit.py` | Habit profile (5-bin probability distribution) |
-| `reference_material.py` | Reference material store + consistency check |
-| `correction.py` | Claim prioritisation + A/B correction method selection |
-| `calibrate_threshold.py` | Baseline calibration (variance-based dynamic N) |
-| `adapt_threshold.py` | EMA self-adaptation of threshold + redundancy scaling |
+| English | Chinese |
+|:---|:---|
+| **6 signals**: keyword density, self-consistency, fuzzy match, material consistency, redundancy, habit profile | **6 信号监测**：关键词密度、自洽性、模糊匹配、素材一致性、冗余度、习惯画像 |
+| **Powerful Chinese support**: jieba word segmentation + stop word filtering + character bigram topic extraction | **中文深度优化**：jieba 分词 + 停用词过滤 + 字符 bigram 话题提取 |
+| **EMA threshold adaptation**: self-tuning threshold based on trigger rate | **EMA 阈值自适应**：根据触发率自动调优阈值 |
+| **MCP integration**: 4 tools (init/check/status/reset) for opencode | **MCP 集成**：4 个工具（init/check/status/reset） |
+| **Idempotent init**: restart-safe, won't create duplicate sessions | **幂等初始化**：重启安全，不会重复创建会话 |
+| **AGENTS.md management**: auto-writes monitoring rules on init | **AGENTS.md 自动管理**：初始化时写入监测规则 |
+| **Atomic writes**: crash-safe data persistence | **原子写入**：崩溃安全的数据持久化 |
+| **File structure**: human-readable JSON data files | **文件结构**：人类可读的 JSON 数据文件 |
 
 ---
 
-## License
+## Quick Start / 快速开始
+
+### 1. Install / 安装
+
+Place the skill in your opencode skills directory:
+
+```bash
+cp -r hallucination-watch ~/.config/opencode/skills/
+```
+
+### 2. Register MCP / 注册 MCP 服务
+
+Add to `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "mcp": {
+    "hallucination-watch": {
+      "type": "local",
+      "command": ["python", "~/.config/opencode/skills/hallucination-watch/scripts/hallucination_watch_mcp.py"],
+      "enabled": true
+    }
+  }
+}
+```
+
+### 3. Use / 使用
+
+```text
+User:  启动幻觉监测
+Agent: → calls hw_init → .hw_active created + AGENTS.md rule injected
+       → every response: calls hw_check(text=...)
+       → if triggered: shows risk card
+
+User:  hw_status
+Agent: → shows session stats
+
+User:  hw_reset
+Agent: → clears all data + removes AGENTS.md rule
+```
+
+---
+
+## Architecture / 架构
+
+```
+hallucination-watch/
+├── SKILL.md                        ← Skill descriptor
+├── README.md                       ← This file
+├── params/
+│   └── default.json                ← 18 configurable parameters
+├── scripts/
+│   ├── hallucination_watch_mcp.py  ← MCP server (4 tools)
+│   ├── monitor.py                  ← CLI entry (standalone use)
+│   ├── check_compliance.py         ← Plugin compliance verifier
+│   ├── signal_keyword.py           ← Signal 1: keyword density
+│   ├── signal_consistency.py       ← Signal 2: Jaccard consistency
+│   ├── signal_fuzzy.py             ← Signal 3: fingerprint hash
+│   ├── signal_material.py          ← Signal 4: topic-gated material check
+│   ├── signal_redundancy.py        ← Signal 5: cumulative redundancy
+│   ├── signal_habit.py             ← Signal 6: position distribution
+│   ├── signal_adapt.py             ← EMA threshold adaptation
+│   ├── signal_topic.py             ← Topic embedding (jieba + stop words)
+│   └── signal_correction.py        ← Optional auto-correction (disabled)
+└── sessions/                       ← Per-session data (auto-created)
+    └── {session_id}/
+        ├── session.json
+        ├── turns.json
+        └── reference.json
+```
+
+---
+
+## Decision Formula / 决策公式
+
+```
+risk_raw = keyword_density × 10 + consistency + fuzzy + material + redundancy + habit_anomaly
+risk_pct = risk_raw / threshold × 100
+
+Zone:
+  safe:   risk_pct < 100   → silent
+  mark:   100 ≤ risk_pct < 250 → card display
+  verify: risk_pct ≥ 250   → card display
+```
+
+---
+
+## Parameter Reference / 参数参考
+
+| Parameter | Default | Description |
+|:---|:---:|:---|
+| threshold | 22 | Risk threshold |
+| density_multiplier | 10 | Keyword score multiplier |
+| k_chars | 7 | Fuzzy match fingerprint length |
+| num_bins | 5 | Habit profile bin count |
+| redundancy_tokens_per_increment | 1000 | Redundacy scaling |
+| redundancy_increment | 5 | Redundancy per increment |
+| min_baseline_n | 3 | Min baseline turns |
+| max_baseline_n | 10 | Max baseline / start active |
+| adaptation_interval | 10 | EMA re-calibration frequency |
+| correction_enabled | false | Auto-correction toggle |
+| target_trigger_rate | 0.10 | EMA target trigger rate |
+| ema_alpha | 0.3 | EMA smoothing factor |
+| threshold_increase_factor | 1.10 | Threshold increase multiplier |
+| threshold_decrease_factor | 0.90 | Threshold decrease multiplier |
+| topic_similarity_threshold | 0.15 | Topic gate threshold |
+
+---
+
+## Comparison with v1 / 与 v1 对比
+
+| Aspect | v1 (original) | v2 (current) |
+|:---|:---|:---|
+| Parameters | 35 | 18 |
+| Signal modules | 8 | 9 (added correction) |
+| Chinese path support | ❌ Broken | ✅ Works |
+| Idempotent init | ❌ | ✅ |
+| MCP tools | ❌ | ✅ (4 tools) |
+| AGENTS.md management | ❌ | ✅ |
+| Atomic writes | ❌ | ✅ |
+| Full-text storage | ❌ (80 char preview) | ✅ (full text) |
+| Stop word filtering | ❌ | ✅ |
+| Threshold adaptation | Complex script | Lightweight EMA |
+
+---
+
+## License / 许可证
 
 MIT
+
+---
+
+## Links / 链接
+
+- GitHub: https://github.com/getfunWindz/non-expensive-hallucination-watcher-skills
+- MCP Server: https://github.com/getfunWindz/hallucination-watch-mcp
